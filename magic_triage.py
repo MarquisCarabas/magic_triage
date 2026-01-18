@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-File Triage Tool
+Magic Triage Tool
 Analyzes suspicious files using magic bytes, generates hashes, and sorts by true file type.
 """
 
@@ -323,4 +323,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
