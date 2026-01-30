@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Magic Triage Tool
-Analyzes suspicious files using magic bytes, generates hashes, and sorts by true file type.
+File Triage Tool with VirusTotal Integration
+Analyzes suspicious files using magic bytes, generates hashes, and checks VirusTotal.
 """
 
 import os
@@ -10,6 +10,8 @@ import magic
 import shutil
 import csv
 import sys
+import requests
+import time
 from pathlib import Path
 
 
@@ -168,13 +170,63 @@ def check_extension_mismatch(filename, true_type):
     return ""
 
 
-def sort_files(source_dir, output_dir):
+def check_virustotal(file_hash, api_key):
+    """
+    Check file hash against VirusTotal.
+    
+    Args:
+        file_hash: SHA256 hash of the file
+        api_key: VirusTotal API key
+        
+    Returns:
+        Dictionary with VT results or None if error
+    """
+    if not api_key:
+        return None
+    
+    try:
+        url = f"https://www.virustotal.com/api/v3/files/{file_hash}"
+        headers = {"x-apikey": api_key}
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            stats = data['data']['attributes']['last_analysis_stats']
+            
+            return {
+                'malicious': stats.get('malicious', 0),
+                'suspicious': stats.get('suspicious', 0),
+                'undetected': stats.get('undetected', 0),
+                'total': sum(stats.values()),
+                'link': f"https://www.virustotal.com/gui/file/{file_hash}"
+            }
+        elif response.status_code == 404:
+            # File not found in VT database
+            return {
+                'malicious': 0,
+                'suspicious': 0,
+                'undetected': 0,
+                'total': 0,
+                'link': None,
+                'status': 'not_found'
+            }
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"  VirusTotal lookup error: {e}")
+        return None
+
+
+def sort_files(source_dir, output_dir, vt_api_key=None):
     """
     Sort files from source directory into categorized folders.
     
     Args:
         source_dir: Directory containing files to analyze
         output_dir: Directory where sorted files will be placed
+        vt_api_key: Optional VirusTotal API key
         
     Returns:
         List of dictionaries containing analysis results
@@ -196,6 +248,17 @@ def sort_files(source_dir, output_dir):
         # Generate hashes
         md5_hash, sha256_hash = generate_hashes(filepath)
         
+        # Check VirusTotal (if API key provided and hash is valid)
+        vt_result = None
+        if vt_api_key and sha256_hash != "ERROR":
+            vt_result = check_virustotal(sha256_hash, vt_api_key)
+            if vt_result:
+                if vt_result.get('status') == 'not_found':
+                    print(f"  VirusTotal: Not found in database")
+                else:
+                    print(f"  VirusTotal: {vt_result['malicious']}/{vt_result['total']} detections")
+            time.sleep(15)  # Rate limiting: 4 requests/minute for free tier
+        
         # Identify true file type
         true_type = identify_filetype(filepath)
         
@@ -204,6 +267,11 @@ def sort_files(source_dir, output_dir):
         
         # Check for extension mismatch
         notes = check_extension_mismatch(filename, true_type)
+        
+        # Add VT detection info to notes if available
+        if vt_result and vt_result.get('status') != 'not_found':
+            if vt_result['malicious'] > 0:
+                notes += f" | VT: {vt_result['malicious']}/{vt_result['total']} detections"
         
         # Create category folder if it doesn't exist
         category_path = os.path.join(output_dir, category)
@@ -225,7 +293,10 @@ def sort_files(source_dir, output_dir):
             'md5': md5_hash,
             'sha256': sha256_hash,
             'notes': notes,
-            'category': category
+            'category': category,
+            'vt_detections': vt_result['malicious'] if vt_result else 'N/A',
+            'vt_total': vt_result['total'] if vt_result else 'N/A',
+            'vt_link': vt_result['link'] if vt_result else 'N/A'
         }
         results.append(result)
         
@@ -248,8 +319,8 @@ def generate_report(results, output_file):
     """
     try:
         with open(output_file, 'w', newline='') as csvfile:
-            # Define CSV headers matching assignment requirements
-            fieldnames = ['Original Filename', 'True File Type', 'Hash (MD5 or SHA256)', 'Notes']
+            # Define CSV headers with VirusTotal columns
+            fieldnames = ['Original Filename', 'True File Type', 'Hash (MD5 or SHA256)', 'VT Detections', 'VT Link', 'Notes']
             
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
@@ -261,7 +332,9 @@ def generate_report(results, output_file):
                 writer.writerow({
                     'Original Filename': result['filename'],
                     'True File Type': result['true_type'],
-                    'Hash (MD5 or SHA256)': result['sha256'],  # Using SHA256 as primary
+                    'Hash (MD5 or SHA256)': result['sha256'],
+                    'VT Detections': f"{result.get('vt_detections', 'N/A')}/{result.get('vt_total', 'N/A')}",
+                    'VT Link': result.get('vt_link', 'N/A'),
                     'Notes': result['notes']
                 })
         
@@ -275,14 +348,23 @@ def main():
     """Main function to orchestrate the file triage process."""
     
     # Check if correct number of arguments provided
-    if len(sys.argv) != 3:
-        print("Usage: python3 file_triage.py <source_directory> <output_directory>")
-        print("Example: python3 file_triage.py ~/Downloads/Lab2_Corpus ~/Downloads/Lab2_Corpus_sorted")
+    if len(sys.argv) < 3:
+        print("Usage: python3 magic_triage.py <source_directory> <output_directory> [vt_api_key]")
+        print("Example: python3 magic_triage.py ~/corpus ~/output")
+        print("Example with VT: python3 magic_triage.py ~/corpus ~/output YOUR_API_KEY")
         sys.exit(1)
     
     # Get source and destination directories from command line
     source_dir = sys.argv[1]
     output_dir = sys.argv[2]
+    
+    # Get optional VirusTotal API key
+    vt_api_key = None
+    if len(sys.argv) >= 4:
+        vt_api_key = sys.argv[3]
+        print(f"VirusTotal scanning: Enabled")
+    else:
+        print(f"VirusTotal scanning: Disabled (no API key provided)")
     
     # Expand user home directory if needed
     source_dir = os.path.expanduser(source_dir)
@@ -306,7 +388,7 @@ def main():
     print(f"{'='*60}\n")
     
     # Sort files and collect results
-    results = sort_files(source_dir, output_dir)
+    results = sort_files(source_dir, output_dir, vt_api_key)
     
     # Generate the report in the parent directory of output
     report_path = os.path.join(os.path.dirname(output_dir), "triage_report.csv")
@@ -323,5 +405,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
