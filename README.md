@@ -22,6 +22,7 @@ A Python-based security tool that automates malware triage by analyzing files ba
 - 🚨 **Extension Spoofing Detection** - Flags files where extension doesn't match content
 - 🔐 **Cryptographic Hashing** - Generates MD5 and SHA256 for threat intelligence correlation
 - 📁 **Automated Categorization** - Sorts files by true type (executables, scripts, documents, etc.)
+- 🧪 **VirusTotal Integration** - The tool now supports VirusTotal hash lookups for threat intelligence.
 - 📊 **CSV Report Generation** - Produces SOC-ready reports for incident response
 - ⚡ **Fast Processing** - Analyzes 88 files in ~2 minutes
 
